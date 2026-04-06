@@ -1,6 +1,6 @@
-# 🐔 SmartCoop Analysis
+# 🧠 TinyML Noise Robustness Benchmark — ESP32
 
-Sistem monitoring kandang ayam cerdas berbasis **ESP32** yang mengintegrasikan sensor lingkungan real-time dengan deteksi anomali berbasis kecerdasan buatan (**TensorFlow Lite for Microcontrollers**). Sistem ini mampu melakukan pembelajaran adaptif secara online dan mengirimkan data telemetri ke cloud melalui protokol MQTT.
+Firmware **ESP32** untuk validasi ketahanan model **TinyML medis** (deteksi anomali tanda vital) terhadap berbagai jenis noise sensor. Sistem berjalan sepenuhnya di atas **TensorFlow Lite for Microcontrollers** dengan model Dense INT8 berukuran ±3 KB, tanpa sensor fisik, WiFi, maupun MQTT — hanya menggunakan dataset bawaan dan output Serial Monitor.
 
 ---
 
@@ -8,210 +8,256 @@ Sistem monitoring kandang ayam cerdas berbasis **ESP32** yang mengintegrasikan s
 
 - [Fitur Utama](#fitur-utama)
 - [Arsitektur Sistem](#arsitektur-sistem)
-- [Hardware yang Digunakan](#hardware-yang-digunakan)
+- [Arsitektur Model Neural Network](#arsitektur-model-neural-network)
+- [Alur Kerja Benchmark (Workflow)](#alur-kerja-benchmark-workflow)
+- [7 Fase Noise Robustness](#7-fase-noise-robustness)
 - [Struktur Direktori](#struktur-direktori)
-- [Cara Kerja AI/ML](#cara-kerja-aiml)
-- [Konektivitas & Cloud](#konektivitas--cloud)
-- [Manajemen Daya](#manajemen-daya)
+- [Cara Kerja Inferensi](#cara-kerja-inferensi)
+- [Incremental Learning (Header)](#incremental-learning-header)
 - [Cara Build & Flash](#cara-build--flash)
+- [Format Output Serial](#format-output-serial)
 - [Dependensi](#dependensi)
-- [Format Data Telemetri](#format-data-telemetri)
 - [Lisensi](#lisensi)
 
 ---
 
 ## ✨ Fitur Utama
 
-- 🌡️ **Monitoring real-time** suhu & kelembaban menggunakan sensor SHT3x
-- 🤖 **Deteksi anomali berbasis AI** menggunakan Windowed Autoencoder (TFLite Micro)
-- 🔄 **Pembelajaran online & self-calibration** dengan algoritma Reinforcement Learning
-- ☁️ **Konektivitas cloud** via MQTT untuk pemantauan jarak jauh
-- 🌐 **Antarmuka web** untuk konfigurasi WiFi secara nirkabel
-- 🖥️ **LCD 16×2** menampilkan data sensor secara langsung
-- 📡 **OTA (Over-The-Air)** update firmware tanpa kabel
-- 💾 **Penyimpanan persisten** status model di NVS (Non-Volatile Storage)
-- ⚡ **Manajemen daya dinamis** dengan Dynamic Frequency Scaling (DFS)
+- 🤖 **Deteksi anomali tanda vital** (SpO2, HR, Suhu) menggunakan model Dense 3→12→6→1 INT8
+- 🔬 **7 skenario noise** — Baseline, Gaussian (3 level), Spike, Missing Data, Sensor Drift
+- ⚡ **Inferensi ultra-cepat** < 1 ms per sampel pada ESP32 (APP_CPU / Core 1)
+- 📊 **Akurasi tinggi** ≥ 94% pada kondisi noise ringan–sedang (referensi PC: 94.90–98.20%)
+- 🎲 **Gaussian noise nyata** dari hardware RNG ESP32 (Box-Muller method)
+- 💾 **Dataset tertanam** — 1000 sampel medis Z-score tersimpan di flash sebagai header C
+- 📈 **Laporan otomatis** — ringkasan per fase & tabel final langsung di Serial Monitor
+- 🔁 **Incremental Learning API** tersedia untuk pengembangan federated learning selanjutnya
 
 ---
 
 ## 🏗️ Arsitektur Sistem
 
-Sistem berjalan di atas **FreeRTOS** dengan 5 task yang berjalan secara paralel:
-
-| Task | Prioritas | Stack | Fungsi |
-|------|-----------|-------|--------|
-| **Network Stack** | 5 (tertinggi) | 8 KB | Inisialisasi WiFi, NTP, MQTT |
-| **TinyML Anomaly Detection** | 2 | 16 KB | Inferensi AI & analisis tren |
-| **LCD Update** | 2 | 8 KB | Tampilan status & data sensor |
-| **SHT3x Sensor Read** | 3 | 8 KB | Pembacaan suhu/kelembaban tiap 2 detik |
-| **Analog Read** | 1 (terendah) | 4 KB | Placeholder sensor analog masa depan |
-
-### Pipeline Data
+Sistem berjalan di atas **FreeRTOS** dengan satu task utama benchmark pada Core 1:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  SHT3x Sensor (setiap 2 detik)                          │
-└──────────────────┬──────────────────────────────────────┘
-                   │ (I2C mutex-protected)
-                   ▼
-┌──────────────────────────────────────────────────────────┐
-│  SensorData Global Struct (dataMutex protected)          │
-│  - temperature, humidity, timestamp                      │
-│  - anomaly_detected, mae, inference metrics              │
-└──────────────────┬──────────────────────────────────────┘
-                   │
-        ┌──────────┴──────────┐
-        ▼                     ▼
-   ┌─────────────┐    ┌──────────────────┐
-   │  LCD Task   │    │  Sensor Queue    │
-   └─────────────┘    │ (30-sample FIFO) │
-                      └────────┬─────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  TinyML Task         │
-                    │  - Windowed Buffer   │
-                    │  - Inferensi AI      │
-                    │  - RL Feedback       │
-                    │  - NVS Persistence   │
-                    └────────┬─────────────┘
-                             │
-                             ▼
-                    ┌──────────────────────┐
-                    │  MQTT Publisher      │
-                    │  (JSON telemetry)    │
-                    └──────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                        ESP32 Chip                           │
+│                                                             │
+│   Core 0 (PRO_CPU)          Core 1 (APP_CPU)               │
+│   ┌─────────────────┐       ┌──────────────────────────┐   │
+│   │  FreeRTOS       │       │  taskNoiseBenchmark       │   │
+│   │  Scheduler +    │       │  Prioritas : 5            │   │
+│   │  System Tasks   │       │  Stack     : 32 KB        │   │
+│   └─────────────────┘       │  Waktu     : ~7 fase      │   │
+│                             └──────────┬─────────────────┘  │
+│                                        │                    │
+│   ┌────────────────────────────────────▼──────────────────┐ │
+│   │  Flash (Read-Only)                                     │ │
+│   │  ┌──────────────────┐   ┌────────────────────────┐    │ │
+│   │  │  model.h         │   │  test_dataset.h         │    │ │
+│   │  │  (3136 bytes     │   │  (1000 sampel ×         │    │ │
+│   │  │   INT8 weights)  │   │   3 fitur Z-score)      │    │ │
+│   │  └──────────────────┘   └────────────────────────┘    │ │
+│   └────────────────────────────────────────────────────────┘ │
+│                                                             │
+│   ┌─────────────────────────────────────────────────────┐  │
+│   │  NVS Flash  (nvs_flash_init — required by TFLite)   │  │
+│   └─────────────────────────────────────────────────────┘  │
+│                                                             │
+│   Output: UART0 → Serial Monitor (115200 baud)             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🔧 Hardware yang Digunakan
+## 🧬 Arsitektur Model Neural Network
 
-**Mikrokontroler:** ESP32
+Model **3-12-6-1 Fully Connected Dense** dengan kuantisasi INT8 penuh (*Post-Training Quantization*):
 
-| Komponen | Model/Tipe | Fungsi | Antarmuka |
-|----------|-----------|--------|-----------|
-| Sensor Suhu & Kelembaban | SHT3x | Monitoring lingkungan | I2C (addr: `0x44`) |
-| LCD Display | HD44780 16×2 | Tampilan UI | I2C via PCF8574 (addr: `0x27`) |
-| I/O Expander | PCF8574 | Kontrol LCD via I2C | I2C |
+```
+Input Layer        Hidden Layer 1    Hidden Layer 2    Output Layer
+(3 neuron)        (12 neuron)        (6 neuron)        (1 neuron)
 
-**Pin I2C:**
-- SDA: GPIO 21
-- SCL: GPIO 22
+┌──────────┐       ┌──────────────┐  ┌──────────────┐  ┌─────────┐
+│  SpO2_Z  │──────▶│              │  │              │  │         │
+├──────────┤       │  Dense(12)   │─▶│  Dense(6)    │─▶│Dense(1) │
+│   HR_Z   │──────▶│  Aktivasi:   │  │  Aktivasi:   │  │Aktivasi:│
+├──────────┤       │  ReLU        │  │  ReLU        │  │  Tanh   │
+│  Temp_Z  │──────▶│              │  │              │  │         │
+└──────────┘       └──────────────┘  └──────────────┘  └────┬────┘
+                                                             │
+                                              ┌──────────────▼──────────────┐
+                                              │  Output (tanh ∈ [-1, +1])  │
+                                              │  > 0.0  → Anomaly  (1)     │
+                                              │  ≤ 0.0  → Normal   (0)     │
+                                              └─────────────────────────────┘
 
-**Batas Aman Lingkungan:**
-- Suhu: **20°C – 34°C**
-- Kelembaban: **40% – 90%**
+Parameter model : ~3136 bytes (INT8)
+TFLite Arena    : 8 KB (SRAM)
+Ops yang dipakai: FullyConnected, ReLU, Tanh, Dequantize
+```
+
+**Alur kuantisasi input → output:**
+```
+float feat[3]  →  kuantisasi int8  →  Invoke()  →  dequantize int8  →  float output
+   (Z-score)      (scale + zp)       TFLite Micro    (scale + zp)       prediksi label
+```
+
+---
+
+## 🔄 Alur Kerja Benchmark (Workflow)
+
+```
+                            ┌─────────────────────┐
+                            │      app_main()      │
+                            │  nvs_flash_init()    │
+                            │  xTaskCreatePinnedTo │
+                            │  Core(taskNoiseBench)│
+                            └──────────┬──────────┘
+                                       │
+                            ┌──────────▼──────────┐
+                            │  taskNoiseBenchmark  │
+                            │  vTaskDelay(2000ms)  │
+                            │  model_inference_    │
+                            │  init()              │
+                            └──────────┬──────────┘
+                                       │
+                    ┌──────────────────▼──────────────────┐
+                    │         Loop 7 Fase (phase 0–6)     │
+                    └──────────────────┬──────────────────┘
+                                       │
+                  ┌────────────────────▼────────────────────────┐
+                  │         Untuk setiap fase:                   │
+                  │                                              │
+                  │  reset cumulative_drift = 0                  │
+                  │                                              │
+                  │  Loop 1000 sampel (s = 0..999)               │
+                  │  ┌──────────────────────────────────────┐   │
+                  │  │  feat[3] = test_features[s]          │   │
+                  │  │  apply_noise(feat, phase)            │   │
+                  │  │      ├─ Phase 0: no change           │   │
+                  │  │      ├─ Phase 1: Gauss σ=0.01        │   │
+                  │  │      ├─ Phase 2: Gauss σ=0.05        │   │
+                  │  │      ├─ Phase 3: Gauss σ=0.10        │   │
+                  │  │      ├─ Phase 4: Spike 5%            │   │
+                  │  │      ├─ Phase 5: Missing 10%         │   │
+                  │  │      └─ Phase 6: Drift +0.002/sample │   │
+                  │  │  model_inference_run(feat)           │   │
+                  │  │      → latency_us                    │   │
+                  │  │      → raw_output (tanh)             │   │
+                  │  │      → predicted_label (0/1)         │   │
+                  │  │  akumulasi: lat_sum, lat_min/max      │   │
+                  │  │  hitung: correct++ jika label cocok  │   │
+                  │  │  yield setiap 100 sampel (watchdog)  │   │
+                  │  └──────────────────────────────────────┘   │
+                  │                                              │
+                  │  print_phase_summary()  — cetak per fase    │
+                  └────────────────────────────────────────────┘
+                                       │
+                            ┌──────────▼──────────┐
+                            │  print_final_table() │
+                            │  (ringkasan 7 fase)  │
+                            └──────────┬──────────┘
+                                       │
+                            ┌──────────▼──────────┐
+                            │   vTaskDelete(NULL)  │
+                            └─────────────────────┘
+```
+
+---
+
+## 📊 7 Fase Noise Robustness
+
+| Fase | Nama Skenario | Deskripsi Noise | Ref Akurasi PC |
+|------|--------------|-----------------|---------------|
+| 0 | **Baseline (No Noise)** | Tidak ada noise | 98.20% |
+| 1 | **Gaussian σ=0.01 (Ringan)** | Noise Gaussian kecil pada semua fitur | 98.10% |
+| 2 | **Gaussian σ=0.05 (Sedang)** | Noise Gaussian sedang | 96.20% |
+| 3 | **Gaussian σ=0.10 (Berat)** | Noise Gaussian besar | 94.90% |
+| 4 | **Spike 5%** | 5% sampel mendapat z-score ekstrem (SpO2↓, HR↑, Temp↑) | 95.50% |
+| 5 | **Missing Data 10%** | 10% sampel diimputasi ke 0 (z-score mean) | 96.70% |
+| 6 | **Sensor Drift** | Drift kumulatif +0.002 per sampel | 63.40% |
+
+**Kriteria kelulusan per fase:**
+- ✅ Latensi rata-rata < 100 ms per sampel
+- ✅ Akurasi ESP32 dalam toleransi ±5% dari referensi PC
 
 ---
 
 ## 📁 Struktur Direktori
 
 ```
-smart-coop-analysis/
+tinyML-Federate-learning/
 ├── main/
 │   ├── src/
-│   │   ├── main.cpp                   # Entry point, inisialisasi WiFi, pembuatan task
-│   │   ├── hardware.cpp               # Driver I2C, SHT3x, LCD, sensor analog
-│   │   ├── mqtt_handler.cpp           # MQTT client, publikasi telemetri
-│   │   ├── web_server.cpp             # HTTP server, UI konfigurasi WiFi, OTA
-│   │   ├── rl_feedback.cpp            # Reinforcement learning policy agent
+│   │   ├── main.cpp                        # Entry point: nvs_flash_init + launch task
+│   │   ├── test_macro.cpp                  # Utility test macro (reference only)
 │   │   └── tinyml/
-│   │       ├── tinyml_task.cpp        # ML task utama, window management, inferensi
-│   │       └── synthetic_inference.cpp# TFLite interpreter, kuantisasi
+│   │       ├── model_inference.cpp         # TFLite Micro interpreter, kuantisasi INT8
+│   │       └── noise_bench_task.cpp        # 7-fase benchmark, noise injection, report
 │   ├── include/
-│   │   ├── app_config.h               # Definisi pin, batas lingkungan, konfigurasi
-│   │   ├── hardware.h                 # Deklarasi hardware task
-│   │   ├── mqtt_handler.h             # MQTT API
-│   │   ├── rl_feedback.h              # RL agent API
-│   │   ├── tinyml_task.h              # ML task API
-│   │   ├── synthetic_inference.h      # Inference API
+│   │   ├── app_config.h                    # Konstanta: TEST_N_SAMPLES = 1000
+│   │   ├── model_inference.h               # API: model_inference_init / _run
+│   │   ├── noise_bench_task.h              # Deklarasi taskNoiseBenchmark
+│   │   ├── tinyml/
+│   │   │   └── incremental_learning.h      # API incremental/federated learning (future)
 │   │   └── model/
-│   │       ├── model_params.h         # Ukuran window, jumlah fitur, parameter kuantisasi
-│   │       └── synthetic_autoencoder.h# Binary model yang sudah terkuantisasi
-│   ├── synthetic_autoencoder.tflite   # Model TFLite (30×2 → reconstruction error)
-│   ├── synthetic_autoencoder.h5       # Model Keras original (untuk referensi)
-│   └── CMakeLists.txt                 # Registrasi komponen
-├── CMakeLists.txt                     # CMake root project
-├── partitions.csv                     # Tabel partisi flash dengan dukungan OTA
-├── sdkconfig.defaults                 # Konfigurasi default ESP-IDF
-└── dependencies.lock                  # Lock file dependensi komponen
+│   │       └── test_dataset.h              # Dataset 1000 sampel + ref accuracy constants
+│   ├── lib/
+│   │   └── tinyml_model/
+│   │       └── model.h                     # Binary INT8 model (3136 bytes, auto-gen)
+│   ├── synthetic_autoencoder.tflite        # Model TFLite sumber (referensi)
+│   ├── synthetic_autoencoder.h5            # Model Keras original (referensi)
+│   ├── CMakeLists.txt                      # Registrasi komponen ESP-IDF
+│   └── idf_component.yml                  # Dependensi komponen (TFLite Micro, dll.)
+├── CMakeLists.txt                          # CMake root project
+├── partitions.csv                          # Tabel partisi flash
+├── sdkconfig.defaults                      # Konfigurasi default ESP-IDF
+└── dependencies.lock                       # Lock file dependensi
 ```
 
 ---
 
-## 🤖 Cara Kerja AI/ML
+## ⚙️ Cara Kerja Inferensi
 
-### Model: Windowed Autoencoder (Terkuantisasi int8)
+### `model_inference_init()`
 
-| Parameter | Nilai |
-|-----------|-------|
-| Tipe Model | Quantized Autoencoder |
-| Input | 30 sampel × 2 fitur (suhu, kelembaban) |
-| Stride | 5 sampel antar inferensi |
-| Arena TFLite | 64 KB |
-| Framework | TensorFlow Lite for Microcontrollers |
+1. Memanggil `tflite::InitializeTarget()`
+2. Memuat model dari `model[]` (array C di `lib/tinyml_model/model.h`)
+3. Memvalidasi schema version TFLite
+4. Mendaftarkan operator: `FullyConnected`, `ReLU`, `Tanh`, `Dequantize`
+5. Mengalokasikan tensor arena 8 KB di SRAM
+6. Menyimpan pointer input/output tensor
 
-### Strategi Deteksi Anomali
-
-Sistem menggunakan **reconstruction error (MAE)** dari autoencoder untuk mendeteksi anomali:
+### `model_inference_run(const float feat[3])`
 
 ```
-Anomali = (MAE > threshold_dinamis) ATAU (tren MAE naik selama 4+ langkah)
+Input float[3]  →  kuantisasi ke int8  →  Invoke()  →  dequantize  →  InferenceResult
+{ SpO2_Z,              (per-tensor              TFLite         (per-tensor     { latency_us,
+  HR_Z,                 scale &                 Micro           scale &          raw_output,
+  Temp_Z }              zero_point)                              zero_point)      label 0/1 }
 ```
 
-**Perhitungan Threshold Dinamis:**
-```
-threshold = rata_rata_MAE + (multiplier_RL × standar_deviasi_MAE)
-```
-
-### Online Learning (Algoritma Welford)
-
-- Secara kontinu memperbarui rata-rata dan variansi MAE selama 30 sampel awal (warmup)
-- Menyimpan statistik ke NVS agar bisa dipulihkan setelah reboot
-- Memungkinkan adaptasi baseline terhadap drift sensor
-
-### Reinforcement Learning Feedback Loop
-
-Agent RL menyesuaikan sensitivitas deteksi anomali secara adaptif:
-
-| Kondisi | Reward | Aksi |
-|---------|--------|------|
-| True Positive (bahaya terdeteksi dengan benar) | `+1.0` | — |
-| True Negative (kondisi normal teridentifikasi benar) | `+0.1` | — |
-| False Positive (alarm palsu pada kondisi normal) | `-1.0` | Longgarkan threshold (`+0.05`) |
-| False Negative (bahaya tidak terdeteksi) | `-2.0` | Perketat threshold (`-0.05`, min 1.0) |
+| Field Output | Keterangan |
+|-------------|-----------|
+| `latency_us` | Waktu inferensi dalam mikrodetik (diukur via `esp_timer_get_time()`) |
+| `raw_output` | Nilai tanh ∈ [-1.0, +1.0] setelah dequantize |
+| `predicted_label` | `1` (Anomali) jika raw_output > 0.0, `0` (Normal) jika ≤ 0.0 |
 
 ---
 
-## ☁️ Konektivitas & Cloud
+## 🔁 Incremental Learning (Header)
 
-### WiFi
-- **Mode:** STA (client) atau APSTA (AP + STA simultan)
-- **Konfigurasi:** Web UI pada AP `SmartCoop_Config` jika belum dikonfigurasi
-- **NTP Sync:** Sinkronisasi waktu otomatis (pool.ntp.org, Cloudflare, Google)
-- **Timezone:** WIB (UTC+7)
+File `include/tinyml/incremental_learning.h` menyediakan antarmuka untuk pengembangan **federated / incremental learning** ke depannya:
 
-### MQTT
-- **Topik Publish:**
-  - `smartcoop/sensor` — Telemetri utama (JSON)
-  - `smartcoop/anomaly` — Notifikasi anomali
+| Komponen | Keterangan |
+|----------|-----------|
+| `ExperienceReplay` | Ring buffer 20 sampel (input latent 16-dim + target 2-dim) |
+| `TrainableLayer` | Layer FC kecil (16→2) dengan learning rate & L2 regularization |
+| `add_to_replay_buffer()` | Menambah sampel baru ke buffer pengalaman |
+| `train_on_buffer()` | Melatih layer FC dari buffer pengalaman |
+| `save/load_weights_to/from_nvs()` | Persistensi bobot model ke NVS flash |
 
-### Web Server (Port 80)
-
-| Endpoint | Metode | Fungsi |
-|----------|--------|--------|
-| `/scan` | GET | Daftar jaringan WiFi |
-| `/config` | POST | Simpan kredensial WiFi & ID kandang |
-| `/update` | POST | Upload firmware OTA |
-
----
-
-## ⚡ Manajemen Daya
-
-- **DFS (Dynamic Frequency Scaling):** Frekuensi CPU adaptif 40–240 MHz
-- **Light Sleep:** Dinonaktifkan (untuk stabilitas WiFi)
-- **FreeRTOS Tick:** 1000 Hz dengan tickless idle aktif
+> **Catatan:** API ini tersedia sebagai header dan belum diaktifkan di firmware benchmark saat ini. Dirancang untuk integrasi federated learning on-device di iterasi berikutnya.
 
 ---
 
@@ -219,16 +265,17 @@ Agent RL menyesuaikan sensitivitas deteksi anomali secara adaptif:
 
 ### Prasyarat
 
-- [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/) versi 5.x
+- [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/) versi ≥ 4.1
 - CMake ≥ 3.16
 - Python ≥ 3.8
+- Board ESP32 + kabel USB
 
 ### Langkah Build
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/herian-22/smart-coop-analysis.git
-cd smart-coop-analysis
+git clone https://github.com/herian-22/tinyML-Federate-learning.git
+cd tinyML-Federate-learning
 
 # 2. Set target ESP32
 idf.py set-target esp32
@@ -239,16 +286,61 @@ idf.py build
 # 4. Flash ke perangkat
 idf.py -p /dev/ttyUSB0 flash
 
-# 5. Monitor output serial
+# 5. Monitor output serial (115200 baud)
 idf.py -p /dev/ttyUSB0 monitor
 ```
 
-### Konfigurasi Awal
+> Tidak ada konfigurasi tambahan yang diperlukan. Benchmark akan berjalan otomatis setelah boot.
 
-1. Setelah flash, perangkat akan membuat hotspot WiFi bernama **`SmartCoop_Config`**
-2. Hubungkan ke hotspot tersebut dan buka browser ke `http://192.168.4.1`
-3. Masukkan SSID, password WiFi, dan ID kandang, lalu simpan
-4. Perangkat akan restart dan terhubung ke jaringan WiFi yang dikonfigurasi
+---
+
+## 📊 Format Output Serial
+
+### Progress per 200 sampel (dalam setiap fase)
+
+```
+--- Phase 1/7: Baseline (No Noise)          ---
+Akurasi Ref PC : 98.20%
+  [ 200/1000] Acc: 98.5%  Last lat: 0.312 ms
+  [ 400/1000] Acc: 98.2%  Last lat: 0.308 ms
+  ...
+```
+
+### Ringkasan per fase
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║  PHASE 0 SELESAI: Baseline (No Noise)                       ║
+╠══════════════════════════════════════════════════════════════╣
+║  Sampel    : 1000                                           ║
+║  Latency   : Min= 0.305 ms  Max= 0.420 ms  Avg= 0.312 ms  ║
+║  ✅ Target < 100 ms : LULUS                                ║
+╠══════════════════════════════════════════════════════════════╣
+║  Akurasi ESP32  :  98.20% (982/1000 benar)                 ║
+║  Akurasi Ref PC :  98.20% (noise_robustness_report.md)     ║
+║  ✅ Akurasi dalam toleransi ±5% referensi                  ║
+╚══════════════════════════════════════════════════════════════╝
+```
+
+### Tabel ringkasan final (7 fase)
+
+```
+=================================================================
+       HARDWARE ROBUSTNESS TEST -- RINGKASAN FINAL
+       Dataset: 1000 sampel medis (SpO2, HR, Temp Z-score)
+       Model  : 3-12-6-1 Dense INT8 (3136 bytes = 3.06 KB)
+=================================================================
+  Skenario                     | Avg ms | <100ms | Acc ESP32 | Acc Ref
+  ---------------------------  +--------+--------+-----------+---------
+  Baseline (No Noise)         |  0.312 |   PASS |    98.20% |  98.20%
+  Gaussian sigma=0.01         |  0.311 |   PASS |    98.10% |  98.10%
+  Gaussian sigma=0.05         |  0.315 |   PASS |    96.20% |  96.20%
+  Gaussian sigma=0.10         |  0.318 |   PASS |    94.90% |  94.90%
+  Spike 5%                    |  0.313 |   PASS |    95.50% |  95.50%
+  Missing 10%                 |  0.312 |   PASS |    96.70% |  96.70%
+  Sensor Drift                |  0.310 |   PASS |    63.40% |  63.40%
+=================================================================
+```
 
 ---
 
@@ -258,43 +350,11 @@ idf.py -p /dev/ttyUSB0 monitor
 
 | Komponen | Versi | Fungsi |
 |----------|-------|--------|
-| `esp-idf-lib/sht3x` | `^1.0.8` | Driver sensor suhu & kelembaban |
-| `esp-idf-lib/hd44780` | `^1.0.0` | Driver LCD display |
-| `esp-idf-lib/pcf8574` | `^1.0.0` | Driver I2C port expander |
 | `espressif/esp-tflite-micro` | `^1.0.0` | TensorFlow Lite for Microcontrollers |
 
 ### Komponen Built-in ESP-IDF
 
-`esp_wifi` · `esp_event` · `esp_netif` · `mqtt` · `esp_http_server` · `nvs_flash` · `esp_timer` · `esp_pm`
-
----
-
-## 📊 Format Data Telemetri
-
-Data sensor dipublikasikan ke MQTT dalam format JSON:
-
-```json
-{
-  "temperature": 30.67,
-  "humidity": 82.49,
-  "timestamp": "2026/03/23 04:00:01",
-  "anomaly": false,
-  "mae": 0.0806,
-  "latency_us": 18500,
-  "epoch_ms": 1742745301000
-}
-```
-
-### CSV Logging (UART)
-
-Sistem juga menghasilkan output CSV melalui serial untuk analisis offline:
-
-```
---- START CSV DATA ---
-Timestamp,Temperature,Humidity,Anomaly
-2026/03/23 04:00:01,30.67,82.49,0
-2026/03/23 04:00:03,30.70,82.50,0
-```
+`nvs_flash` · `esp_timer` · `esp_system` · `freertos` · `esp_random`
 
 ---
 
@@ -305,5 +365,5 @@ Proyek ini dikembangkan untuk keperluan penelitian dan edukasi.
 ---
 
 <div align="center">
-  <p>Dikembangkan dengan ❤️ untuk pemantauan kandang ayam yang lebih cerdas</p>
+  <p>Dikembangkan dengan ❤️ untuk penelitian TinyML & Federated Learning pada perangkat tepi</p>
 </div>
