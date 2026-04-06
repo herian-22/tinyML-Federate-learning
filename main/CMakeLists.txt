@@ -1,28 +1,15 @@
 idf_component_register(
-    SRCS 
-        "src/main.cpp" 
-        "src/hardware.cpp"
-        "src/tinyml/tinyml_task.cpp"
-        "src/web_server.cpp"
-        "src/mqtt_handler.cpp"
-        "src/tinyml/synthetic_inference.cpp"
-        "src/rl_feedback.cpp"
-        "src/system_monitor.cpp"
-    INCLUDE_DIRS 
+    SRCS
+        "src/main.cpp"
+        "src/tinyml/model_inference.cpp"
+        "src/tinyml/noise_bench_task.cpp"
+    INCLUDE_DIRS
         "include"
         "include/model"
+        "lib/tinyml_model"
     REQUIRES
-        esp_pm
         nvs_flash
-        esp_wifi
-        esp_event
-        esp_netif
-        esp_http_server
-        mqtt
-        driver
         esp_timer
-        app_update
         esp_system
-        json
-        lwip
+        espressif__esp-tflite-micro
 )
