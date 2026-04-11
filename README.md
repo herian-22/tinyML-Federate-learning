@@ -7,6 +7,7 @@ Firmware **ESP32** untuk validasi ketahanan model **TinyML medis** (deteksi anom
 ## 📋 Daftar Isi
 
 - [Fitur Utama](#fitur-utama)
+- [Demo & Preview](#demo--preview)
 - [Arsitektur Sistem](#arsitektur-sistem)
 - [Arsitektur Model Neural Network](#arsitektur-model-neural-network)
 - [Alur Kerja Benchmark (Workflow)](#alur-kerja-benchmark-workflow)
@@ -31,6 +32,63 @@ Firmware **ESP32** untuk validasi ketahanan model **TinyML medis** (deteksi anom
 - 💾 **Dataset tertanam** — 1000 sampel medis Z-score tersimpan di flash sebagai header C
 - 📈 **Laporan otomatis** — ringkasan per fase & tabel final langsung di Serial Monitor
 - 🔁 **Incremental Learning API** tersedia untuk pengembangan federated learning selanjutnya
+
+---
+
+## 🎬 Demo & Preview
+
+> **Catatan:** GIF di bawah merekam output nyata firmware yang berjalan di atas ESP32 melalui Serial Monitor.  
+> Jika gambar belum muncul, lihat panduan [`assets/README.md`](assets/README.md) untuk cara menambahkannya.
+
+### 🖥️ Serial Monitor — Jalannya 7 Fase Benchmark
+
+![Demo Serial Monitor](assets/demo-serial.gif)
+
+<details>
+<summary>Tidak melihat GIF? Klik untuk melihat contoh teks output</summary>
+
+```
+--- Phase 1/7: Baseline (No Noise)          ---
+Akurasi Ref PC : 98.20%
+  [ 200/1000] Acc: 98.5%  Last lat: 0.312 ms
+  [ 400/1000] Acc: 98.2%  Last lat: 0.308 ms
+  ...
+╔══════════════════════════════════════════════════════════════╗
+║  PHASE 0 SELESAI: Baseline (No Noise)                       ║
+╠══════════════════════════════════════════════════════════════╣
+║  Latency   : Min= 0.305 ms  Max= 0.420 ms  Avg= 0.312 ms  ║
+║  ✅ Target < 100 ms : LULUS                                ║
+╚══════════════════════════════════════════════════════════════╝
+```
+
+</details>
+
+### 📊 Tabel Ringkasan Final — Hasil Benchmark 7 Fase
+
+![Benchmark Results Dashboard](assets/benchmark-results.gif)
+
+<details>
+<summary>Tidak melihat GIF? Klik untuk melihat contoh teks output</summary>
+
+```
+=================================================================
+       HARDWARE ROBUSTNESS TEST -- RINGKASAN FINAL
+       Dataset: 1000 sampel medis (SpO2, HR, Temp Z-score)
+       Model  : 3-12-6-1 Dense INT8 (3136 bytes = 3.06 KB)
+=================================================================
+  Skenario                     | Avg ms | <100ms | Acc ESP32 | Acc Ref
+  ---------------------------  +--------+--------+-----------+---------
+  Baseline (No Noise)         |  0.312 |   PASS |    98.20% |  98.20%
+  Gaussian sigma=0.01         |  0.311 |   PASS |    98.10% |  98.10%
+  Gaussian sigma=0.05         |  0.315 |   PASS |    96.20% |  96.20%
+  Gaussian sigma=0.10         |  0.318 |   PASS |    94.90% |  94.90%
+  Spike 5%                    |  0.313 |   PASS |    95.50% |  95.50%
+  Missing 10%                 |  0.312 |   PASS |    96.70% |  96.70%
+  Sensor Drift                |  0.310 |   PASS |    63.40% |  63.40%
+=================================================================
+```
+
+</details>
 
 ---
 
